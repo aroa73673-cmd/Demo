@@ -1,0 +1,245 @@
+// NEXUS BANK — ELITE 2027
+// Money is ALWAYS stored as integer minor units (pence) to avoid float drift.
+// SQLite has no native enums: every enum-like column is a String, validated at
+// the boundary with zod schemas in src/lib/validation.ts.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  sessions      Session[]
+  accounts      Account[]
+  cards         Card[]
+  merchantRules MerchantRule[]
+  transactions  Transaction[]
+  budgets       Budget[]
+  alerts        Alert[]
+  disputes      Dispute[]
+  refunds       Refund[]
+  followUps     FollowUp[]
+  auditEvents   AuditEvent[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  ip        String?
+  userAgent String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  lastSeen  DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Account {
+  id           String   @id @default(cuid())
+  userId       String
+  name         String
+  type         String // CURRENT | SAVINGS
+  currency     String   @default("GBP")
+  balanceMinor Int      @default(0)
+  isDemo       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  cards        Card[]
+  transactions Transaction[]
+
+  @@index([userId])
+}
+
+model Card {
+  id                   String   @id @default(cuid())
+  userId               String
+  accountId            String
+  label                String
+  kind                 String // DEBIT | CREDIT | VIRTUAL
+  network              String // VISA | MASTERCARD
+  holderName           String
+  last4                String
+  expiryMonth          Int
+  expiryYear           Int
+  status               String // ACTIVE | FROZEN | BLOCKED | REPLACED
+  perTxLimitMinor      Int      @default(100000)
+  dailyLimitMinor      Int      @default(150000)
+  monthlyLimitMinor    Int      @default(500000)
+  onlineAllowed        Boolean  @default(true)
+  contactlessAllowed   Boolean  @default(true)
+  internationalAllowed Boolean  @default(false)
+  atmAllowed           Boolean  @default(true)
+  replacedByCardId     String?
+  isDemo               Boolean  @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account      Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+
+  @@index([userId])
+  @@index([accountId])
+}
+
+model MerchantRule {
+  id                String   @id @default(cuid())
+  userId            String
+  name              String // normalized lowercase key
+  displayName       String
+  blocked           Boolean  @default(false)
+  monthlyLimitMinor Int?
+  note              String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, name])
+  @@index([userId])
+}
+
+model Transaction {
+  id               String    @id @default(cuid())
+  userId           String
+  accountId        String
+  cardId           String?
+  direction        String // DEBIT | CREDIT
+  amountMinor      Int
+  currency         String    @default("GBP")
+  merchantName     String
+  merchantCategory String? // MCC-style descriptor e.g. "5999 - Digital Goods"
+  category         String // user-facing budget category
+  status           String // PENDING | COMPLETED | DECLINED | REFUNDED | PARTIALLY_REFUNDED | DISPUTED | CANCELLED
+  method           String // ONLINE | POS | TRANSFER | SUBSCRIPTION | ATM
+  orderRef         String?
+  description      String?
+  refundedMinor    Int       @default(0)
+  isDemo           Boolean   @default(true)
+  createdAt        DateTime  @default(now())
+  postedAt         DateTime?
+
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account   Account    @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  card      Card?      @relation(fields: [cardId], references: [id], onDelete: SetNull)
+  refunds   Refund[]
+  disputes  Dispute[]
+  followUps FollowUp[]
+  alerts    Alert[]
+
+  @@index([userId, createdAt])
+  @@index([userId, status])
+  @@index([userId, category])
+  @@index([cardId])
+}
+
+model Refund {
+  id            String    @id @default(cuid())
+  userId        String
+  transactionId String
+  amountMinor   Int
+  status        String // REQUESTED | CONFIRMED | DECLINED | CANCELLED
+  providerRef   String?
+  note          String?
+  createdAt     DateTime  @default(now())
+  resolvedAt    DateTime?
+
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transaction Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([transactionId])
+}
+
+model FollowUp {
+  id            String    @id @default(cuid())
+  userId        String
+  transactionId String
+  dueAt         DateTime
+  status        String // PENDING | RESOLVED | CANCELLED
+  orderReceived Boolean?
+  note          String?
+  createdAt     DateTime  @default(now())
+  resolvedAt    DateTime?
+
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transaction Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@index([userId, dueAt])
+  @@index([status])
+}
+
+model Dispute {
+  id            String   @id @default(cuid())
+  userId        String
+  transactionId String
+  reason        String // UNAUTHORIZED | NOT_RECEIVED | NOT_AS_DESCRIBED | DUPLICATE | OTHER
+  description   String
+  status        String // SUBMITTED | UNDER_REVIEW | PROVISIONAL_CREDIT | RESOLVED_WON | RESOLVED_LOST | WITHDRAWN
+  timeline      String   @default("[]") // JSON array of { at, event, detail }
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transaction Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+}
+
+model Budget {
+  id                String   @id @default(cuid())
+  userId            String
+  category          String
+  monthlyLimitMinor Int
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, category])
+}
+
+model Alert {
+  id            String   @id @default(cuid())
+  userId        String
+  type          String // UNUSUAL_SPEND | DUPLICATE_RECENT | NEW_RECURRING | MERCHANT_RISK | CARD_LIMIT | BUDGET_LIMIT | FOLLOW_UP_DUE | PURCHASE_STATUS | SECURITY
+  severity      String // INFO | WARN | CRITICAL
+  title         String
+  explanation   String
+  transactionId String?
+  read          Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transaction Transaction? @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+
+  @@index([userId, read])
+  @@index([userId, createdAt])
+}
+
+model AuditEvent {
+  id        String   @id @default(cuid())
+  userId    String?
+  action    String
+  detail    String
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([action])
+}
